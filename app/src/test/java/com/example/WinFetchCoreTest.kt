@@ -2,19 +2,22 @@ package com.example
 
 import com.example.data.model.DownloadPriority
 import com.example.data.model.SiteArchiveFormat
+import com.example.data.model.SpeedUnit
 import com.example.engine.ArchiveManager
 import com.example.engine.DirectDownloader
+import com.example.engine.GitTransferEngine
 import com.example.engine.torrent.Bencode
 import com.example.engine.torrent.BencodeValue
 import com.example.engine.torrent.TorrentMetadata
 import kotlinx.coroutines.test.runTest
+import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.transport.URIish
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
-import java.security.MessageDigest
 
 class WinFetchCoreTest {
 
@@ -86,6 +89,47 @@ class WinFetchCoreTest {
         assertEquals("Sample Pack", magMeta.name)
         assertEquals("0123456789abcdef0123456789abcdef01234567", magMeta.infoHashHex)
         assertTrue(magMeta.trackers.isNotEmpty())
+    }
+
+    @Test
+    fun speedUnitConversions_areExact() {
+        // 800 Kb/s (kilobits/s) == 100,000 bytes/s
+        assertEquals(100_000L, SpeedUnit.KB_BIT.toBytesPerSecond(800L))
+        // 500 KB/s (kilobytes/s) == 500,000 bytes/s
+        assertEquals(500_000L, SpeedUnit.KB_BYTE.toBytesPerSecond(500L))
+        // 512 KiB/s (kibibytes/s) == 524,288 bytes/s
+        assertEquals(524_288L, SpeedUnit.KIB_BYTE.toBytesPerSecond(512L))
+        // 8 Mb/s == 1,000,000 bytes/s
+        assertEquals(1_000_000L, SpeedUnit.MB_BIT.toBytesPerSecond(8L))
+        assertEquals(1_000_000L, SpeedUnit.MB_BYTE.toBytesPerSecond(1L))
+        assertEquals(1_048_576L, SpeedUnit.MIB_BYTE.toBytesPerSecond(1L))
+    }
+
+    @Test
+    fun gitPushAndCloneRoundTrip_worksWithJGit() {
+        val bareRemoteDir = tempFolder.newFolder("remote_bare.git")
+        Git.init().setDirectory(bareRemoteDir).setBare(true).setInitialBranch("main").call().close()
+
+        val uploadSourceDir = tempFolder.newFolder("upload_folder")
+        File(uploadSourceDir, "README.md").writeText("# WinFetch Git Test")
+
+        Git.init().setDirectory(uploadSourceDir).setInitialBranch("main").call().use { git ->
+            git.remoteAdd().setName("origin").setUri(URIish(bareRemoteDir.toURI().toString())).call()
+            git.add().addFilepattern(".").call()
+            git.commit().setMessage("Initial commit").setAuthor("Test", "test@localhost").call()
+            git.push().setRemote("origin").call()
+        }
+
+        val clonedDir = File(tempFolder.root, "cloned_repo")
+        Git.cloneRepository()
+            .setURI(bareRemoteDir.toURI().toString())
+            .setDirectory(clonedDir)
+            .setBranch("main")
+            .call()
+            .close()
+
+        assertEquals("# WinFetch Git Test", File(clonedDir, "README.md").readText())
+        assertEquals("winfetch", GitTransferEngine.deriveRepoName("https://github.com/org/winfetch.git"))
     }
 
     @Test

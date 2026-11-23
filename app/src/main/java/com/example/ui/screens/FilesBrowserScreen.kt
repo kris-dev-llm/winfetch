@@ -24,7 +24,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
@@ -71,6 +73,7 @@ fun FilesBrowserScreen(
     onRefresh: () -> Unit,
     onOpenEntry: (FileBrowserEntry) -> Unit,
     onExtractEntry: (FileBrowserEntry) -> Unit,
+    onGitPushFolder: (FileBrowserEntry) -> Unit,
     onShareEntry: (FileBrowserEntry) -> Unit,
     onDeleteEntry: (FileBrowserEntry) -> Unit,
     onClosePreview: () -> Unit,
@@ -98,7 +101,6 @@ fun FilesBrowserScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Windows 10 Explorer Address & Toolbar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -176,7 +178,7 @@ fun FilesBrowserScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Completed files, saved sites, extracted folders, and torrents appear here.",
+                        text = "Completed files, saved sites, cloned Git repos, extracted folders, and torrents appear here.",
                         style = MaterialTheme.typography.bodySmall,
                         color = tokens.textSecondary
                     )
@@ -193,6 +195,7 @@ fun FilesBrowserScreen(
                         entry = entry,
                         onOpen = { onOpenEntry(entry) },
                         onExtract = { onExtractEntry(entry) },
+                        onGitPush = { onGitPushFolder(entry) },
                         onShare = { onShareEntry(entry) },
                         onDelete = { onDeleteEntry(entry) }
                     )
@@ -207,11 +210,13 @@ private fun FileExplorerRow(
     entry: FileBrowserEntry,
     onOpen: () -> Unit,
     onExtract: () -> Unit,
+    onGitPush: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit
 ) {
     val tokens = LocalWin10Tokens.current
     val icon = when {
+        entry.isGitRepo -> Icons.Filled.AccountTree
         entry.isHtmlSiteEntry -> Icons.Filled.Language
         entry.isDirectory -> Icons.Filled.Folder
         entry.isArchive -> Icons.Filled.FolderZip
@@ -236,7 +241,7 @@ private fun FileExplorerRow(
             Icon(
                 imageVector = icon,
                 contentDescription = entry.name,
-                tint = if (entry.isDirectory || entry.isHtmlSiteEntry) tokens.accent else tokens.textPrimary,
+                tint = if (entry.isDirectory || entry.isHtmlSiteEntry || entry.isGitRepo) tokens.accent else tokens.textPrimary,
                 modifier = Modifier.size(28.dp)
             )
             Spacer(modifier = Modifier.width(10.dp))
@@ -264,7 +269,9 @@ private fun FileExplorerRow(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (entry.isHtmlSiteEntry) {
+                    if (entry.isGitRepo) {
+                        Win10TagBadge(text = "GIT", accent = true)
+                    } else if (entry.isHtmlSiteEntry) {
                         Win10TagBadge(text = "SITE", accent = true)
                     } else if (entry.isArchive) {
                         Win10TagBadge(text = entry.file.extension.uppercase())
@@ -272,6 +279,18 @@ private fun FileExplorerRow(
                 }
             }
 
+            if (entry.isDirectory) {
+                IconButton(
+                    onClick = onGitPush,
+                    modifier = Modifier.testTag("git_push_${entry.name}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.CloudUpload,
+                        contentDescription = "Git push ${entry.name}",
+                        tint = tokens.accent
+                    )
+                }
+            }
             if (entry.isArchive) {
                 IconButton(onClick = onExtract) {
                     Icon(

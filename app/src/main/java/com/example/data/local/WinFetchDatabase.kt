@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.model.DownloadKind
 import com.example.data.model.DownloadPriority
 import com.example.data.model.DownloadStatus
@@ -25,7 +27,7 @@ class WinFetchTypeConverters {
     @TypeConverter fun toSiteFormat(value: String): SiteArchiveFormat = runCatching { SiteArchiveFormat.valueOf(value) }.getOrDefault(SiteArchiveFormat.ZIP)
 }
 
-@Database(entities = [DownloadTaskEntity::class], version = 1, exportSchema = false)
+@Database(entities = [DownloadTaskEntity::class], version = 2, exportSchema = false)
 @TypeConverters(WinFetchTypeConverters::class)
 abstract class WinFetchDatabase : RoomDatabase() {
     abstract fun downloadTaskDao(): DownloadTaskDao
@@ -33,13 +35,25 @@ abstract class WinFetchDatabase : RoomDatabase() {
     companion object {
         @Volatile private var instance: WinFetchDatabase? = null
 
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE download_tasks ADD COLUMN gitBranch TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE download_tasks ADD COLUMN gitCommitMessage TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE download_tasks ADD COLUMN gitShallow INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE download_tasks ADD COLUMN speedLimitBytesPerSec INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): WinFetchDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     WinFetchDatabase::class.java,
                     "winfetch_downloads.db"
-                ).build().also { instance = it }
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { instance = it }
             }
         }
     }

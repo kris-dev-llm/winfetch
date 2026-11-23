@@ -26,10 +26,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Archive
-import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -71,6 +71,7 @@ import com.example.data.local.DownloadTaskEntity
 import com.example.data.model.DownloadKind
 import com.example.data.model.DownloadPriority
 import com.example.data.model.DownloadStatus
+import com.example.data.prefs.WinFetchSettings
 import com.example.engine.ArchiveManager
 import com.example.engine.FormatUtils
 import com.example.ui.TransferFilterTab
@@ -87,12 +88,14 @@ import java.io.File
 fun TransfersScreen(
     tasks: List<DownloadTaskEntity>,
     speedHistory: Map<String, List<Long>>,
+    settings: WinFetchSettings,
     selectedFilter: TransferFilterTab,
     searchQuery: String,
     expandedIds: Set<String>,
     onSelectFilter: (TransferFilterTab) -> Unit,
     onSearchChange: (String) -> Unit,
     onNewDownload: () -> Unit,
+    onOpenSpeedLimit: () -> Unit,
     onPauseAll: () -> Unit,
     onResumeAll: () -> Unit,
     onClearCompleted: () -> Unit,
@@ -128,6 +131,12 @@ fun TransfersScreen(
         }
     }
 
+    val speedLimitLabel = if (settings.speedLimitEnabled) {
+        "Limit: ${settings.speedLimitValue} ${settings.speedLimitUnit.shortLabel}/s"
+    } else {
+        "Speed Limit: Off"
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -149,6 +158,11 @@ fun TransfersScreen(
                 primary = true,
                 onClick = onNewDownload,
                 testTag = "command_new_download"
+            )
+            Win10ActionButton(
+                text = speedLimitLabel,
+                onClick = onOpenSpeedLimit,
+                testTag = "command_speed_limit"
             )
             Win10ActionButton(
                 text = "Pause All",
@@ -305,16 +319,19 @@ private fun Win10TransferCard(
         DownloadKind.FOLDER_BUNDLE -> Icons.Filled.Folder
         DownloadKind.WEBSITE -> Icons.Filled.Language
         DownloadKind.TORRENT -> Icons.Filled.Hub
+        DownloadKind.GIT_DOWNLOAD -> Icons.Filled.AccountTree
+        DownloadKind.GIT_UPLOAD -> Icons.Filled.CloudUpload
     }
 
     val isIndeterminate = task.status == DownloadStatus.CONNECTING ||
         task.status == DownloadStatus.PACKAGING ||
         task.status == DownloadStatus.EXTRACTING ||
-        (task.status == DownloadStatus.DOWNLOADING && task.totalBytes <= 0L && task.assetsTotal <= 0)
+        ((task.status == DownloadStatus.DOWNLOADING || task.status == DownloadStatus.UPLOADING) &&
+            task.totalBytes <= 0L && task.assetsTotal <= 0)
 
     val percentText = when {
         task.status == DownloadStatus.COMPLETED -> "100%"
-        task.totalBytes > 0L || (task.kind == DownloadKind.WEBSITE && task.assetsTotal > 0) ->
+        task.totalBytes > 0L || task.assetsTotal > 0 ->
             "${(task.progressFraction * 100).toInt().coerceIn(0, 100)}%"
         else -> "--"
     }
@@ -340,7 +357,6 @@ private fun Win10TransferCard(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Header Row: Icon + Title + Priority Badge + Share
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -395,7 +411,6 @@ private fun Win10TransferCard(
                 }
             }
 
-            // Metadata Tags Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -404,11 +419,17 @@ private fun Win10TransferCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Win10TagBadge(text = task.kind.label.uppercase(), accent = true)
+                if (task.speedLimitBytesPerSec > 0L) {
+                    Win10TagBadge(text = "CAP ${FormatUtils.formatSpeed(task.speedLimitBytesPerSec)}")
+                }
                 if (task.kind == DownloadKind.WEBSITE) {
                     Win10TagBadge(text = task.siteArchiveFormat.label)
                     if (task.rewriteSiteRefs) Win10TagBadge(text = "REFS->DIR")
                 }
-                if (task.downloadIntoFolder) {
+                if (task.gitBranch.isNotBlank()) {
+                    Win10TagBadge(text = "BRANCH:${task.gitBranch}")
+                }
+                if (task.downloadIntoFolder && task.kind != DownloadKind.GIT_UPLOAD) {
                     Win10TagBadge(text = "FOLDER")
                 }
                 if (task.extractOnDownload) {
@@ -419,14 +440,12 @@ private fun Win10TransferCard(
                 }
             }
 
-            // Windows 10 Progress Bar
             Win10ProgressBar(
                 progress = task.progressFraction,
                 status = task.status,
                 indeterminate = isIndeterminate
             )
 
-            // Telemetry Row: Status + % + Bytes + Speed + ETA
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -476,7 +495,6 @@ private fun Win10TransferCard(
                 )
             }
 
-            // Primary Inline Controls + "More details" Windows 10 toggle
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -514,7 +532,6 @@ private fun Win10TransferCard(
                     }
                 }
 
-                // Windows 10 "More details" expander
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -538,7 +555,6 @@ private fun Win10TransferCard(
                 }
             }
 
-            // Expanded Windows 10 Transfer Graph & Priority/Path Details
             AnimatedVisibility(visible = expanded) {
                 Column(
                     modifier = Modifier
@@ -658,7 +674,7 @@ private fun EmptyTransfersState(
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Download files directly, organize into folders, save offline websites (ZIP, DIR, or 7Z), or fetch torrents with Casual, Quick, or URGENT priority.",
+            text = "Download files directly, organize into folders, save offline websites (ZIP, DIR, or 7Z), clone or push Git repositories, or fetch torrents with Casual, Quick, or URGENT priority.",
             style = MaterialTheme.typography.bodyMedium,
             color = tokens.textSecondary
         )

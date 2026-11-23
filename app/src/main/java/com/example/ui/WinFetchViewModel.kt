@@ -10,8 +10,11 @@ import com.example.data.model.DownloadKind
 import com.example.data.model.DownloadPriority
 import com.example.data.model.DownloadStatus
 import com.example.data.model.SiteArchiveFormat
+import com.example.data.model.SpeedUnit
 import com.example.data.prefs.WinFetchSettings
 import com.example.engine.ArchiveManager
+import com.example.engine.FormatUtils
+import com.example.engine.GitRuntimeCredentials
 import com.example.engine.ShareAndExportHelper
 import com.example.engine.StoragePaths
 import com.example.ui.theme.WinThemeMode
@@ -34,6 +37,7 @@ enum class TransferFilterTab(val label: String) {
     ACTIVE("Active"),
     SITES("Sites"),
     TORRENTS("Torrents"),
+    GIT("Git"),
     COMPLETED("Done")
 }
 
@@ -45,7 +49,8 @@ data class FileBrowserEntry(
     val childCount: Int,
     val lastModified: Long,
     val isArchive: Boolean,
-    val isHtmlSiteEntry: Boolean
+    val isHtmlSiteEntry: Boolean,
+    val isGitRepo: Boolean
 )
 
 data class NewDownloadDraft(
@@ -60,7 +65,18 @@ data class NewDownloadDraft(
     val folderName: String = "",
     val extractOnDownload: Boolean = false,
     val safTreeUri: String? = null,
-    val safFolderLabel: String? = null
+    val safFolderLabel: String? = null,
+    val localSourcePath: String = "",
+    val gitBranch: String = "",
+    val gitCommitMessage: String = "",
+    val gitShallow: Boolean = true,
+    val gitUsername: String = "",
+    val gitToken: String = "",
+    val gitAuthorName: String = "WinFetch User",
+    val gitAuthorEmail: String = "winfetch@localhost",
+    val customSpeedLimitEnabled: Boolean = false,
+    val customSpeedLimitValue: String = "512",
+    val customSpeedLimitUnit: SpeedUnit = SpeedUnit.KIB_BYTE
 )
 
 class WinFetchViewModel(application: Application) : AndroidViewModel(application) {
@@ -100,6 +116,9 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
             }
             TransferFilterTab.SITES -> tasks.filter { it.kind == DownloadKind.WEBSITE }
             TransferFilterTab.TORRENTS -> tasks.filter { it.kind == DownloadKind.TORRENT }
+            TransferFilterTab.GIT -> tasks.filter {
+                it.kind == DownloadKind.GIT_DOWNLOAD || it.kind == DownloadKind.GIT_UPLOAD
+            }
             TransferFilterTab.COMPLETED -> tasks.filter { it.status == DownloadStatus.COMPLETED }
         }
         val q = query.trim().lowercase()
@@ -110,7 +129,6 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
                     it.folderName.lowercase().contains(q)
             }
         }
-        // Sort active/queued highest priority first, then newest
         searched.sortedWith(
             compareByDescending<DownloadTaskEntity> { it.status.isActive }
                 .thenByDescending { if (!it.status.isTerminal) it.priority.rank else 0 }
@@ -128,6 +146,9 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
     private val _isNewDialogOpen = MutableStateFlow(false)
     val isNewDialogOpen: StateFlow<Boolean> = _isNewDialogOpen.asStateFlow()
 
+    private val _isSpeedLimitDialogOpen = MutableStateFlow(false)
+    val isSpeedLimitDialogOpen: StateFlow<Boolean> = _isSpeedLimitDialogOpen.asStateFlow()
+
     private val _draft = MutableStateFlow(NewDownloadDraft())
     val draft: StateFlow<NewDownloadDraft> = _draft.asStateFlow()
 
@@ -136,6 +157,9 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
 
     private val _browserEntries = MutableStateFlow<List<FileBrowserEntry>>(emptyList())
     val browserEntries: StateFlow<List<FileBrowserEntry>> = _browserEntries.asStateFlow()
+
+    private val _availableLocalFolders = MutableStateFlow<List<File>>(emptyList())
+    val availableLocalFolders: StateFlow<List<File>> = _availableLocalFolders.asStateFlow()
 
     private val _previewHtmlFile = MutableStateFlow<File?>(null)
     val previewHtmlFile: StateFlow<File?> = _previewHtmlFile.asStateFlow()
@@ -161,11 +185,21 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun openSpeedLimitDialog() {
+        _isSpeedLimitDialogOpen.value = true
+    }
+
+    fun closeSpeedLimitDialog() {
+        _isSpeedLimitDialogOpen.value = false
+    }
+
     fun openNewDownloadDialog(prefillUrl: String? = null) {
+        refreshAvailableFolders()
         val currentSettings = settings.value
         val trimmed = prefillUrl?.trim().orEmpty()
         val inferredKind = when {
             trimmed.startsWith("magnet:", true) || trimmed.endsWith(".torrent", true) -> DownloadKind.TORRENT
+            trimmed.endsWith(".git", true) -> DownloadKind.GIT_DOWNLOAD
             trimmed.isNotBlank() && !trimmed.substringBefore('?').substringAfterLast('/').contains('.') -> DownloadKind.WEBSITE
             else -> DownloadKind.DIRECT_FILE
         }
@@ -175,7 +209,24 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
             priority = currentSettings.defaultPriority,
             siteFormat = currentSettings.defaultSiteFormat,
             rewriteSiteRefs = currentSettings.defaultRewriteSiteRefs,
-            extractOnDownload = currentSettings.defaultExtractOnDownload
+            extractOnDownload = currentSettings.defaultExtractOnDownload,
+            localSourcePath = _availableLocalFolders.value.firstOrNull()?.absolutePath.orEmpty()
+        )
+        _isNewDialogOpen.value = true
+    }
+
+    fun openGitPushForFolder(folder: File) {
+        refreshAvailableFolders()
+        val currentSettings = settings.value
+        _draft.value = NewDownloadDraft(
+            url = "",
+            title = "",
+            kind = DownloadKind.GIT_UPLOAD,
+            priority = currentSettings.defaultPriority,
+            folderName = folder.name,
+            localSourcePath = folder.absolutePath,
+            gitBranch = "main",
+            gitCommitMessage = "Upload ${folder.name} via WinFetch"
         )
         _isNewDialogOpen.value = true
     }
@@ -191,9 +242,31 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
     fun submitNewDownload() {
         val d = _draft.value
         if (d.url.isBlank()) {
-            _messages.tryEmit("Enter a URL, magnet link, or pick a .torrent file.")
+            _messages.tryEmit(
+                if (d.kind == DownloadKind.GIT_UPLOAD) "Enter a remote Git URL to push to."
+                else "Enter a URL, magnet link, Git repo, or pick a .torrent file."
+            )
             return
         }
+        if (d.kind == DownloadKind.GIT_UPLOAD && d.localSourcePath.isBlank() && d.safTreeUri.isNullOrBlank()) {
+            _messages.tryEmit("Select a local folder or device folder to push.")
+            return
+        }
+
+        val customLimitBps = if (d.customSpeedLimitEnabled) {
+            val numeric = d.customSpeedLimitValue.toLongOrNull() ?: 0L
+            d.customSpeedLimitUnit.toBytesPerSecond(numeric)
+        } else 0L
+
+        val gitCreds = if (d.kind == DownloadKind.GIT_DOWNLOAD || d.kind == DownloadKind.GIT_UPLOAD) {
+            GitRuntimeCredentials(
+                username = d.gitUsername.trim(),
+                tokenOrPassword = d.gitToken,
+                authorName = d.gitAuthorName.trim(),
+                authorEmail = d.gitAuthorEmail.trim()
+            )
+        } else null
+
         viewModelScope.launch {
             val task = repo.startNewDownload(
                 sourceUrl = d.url,
@@ -206,11 +279,18 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
                 downloadIntoFolder = d.downloadIntoFolder,
                 folderName = d.folderName,
                 extractOnDownload = d.extractOnDownload,
-                safTreeUri = d.safTreeUri
+                safTreeUri = d.safTreeUri,
+                localSourcePath = d.localSourcePath,
+                gitBranch = d.gitBranch,
+                gitCommitMessage = d.gitCommitMessage,
+                gitShallow = d.gitShallow,
+                gitCredentials = gitCreds,
+                speedLimitBytesPerSec = customLimitBps
             )
             _expandedTaskIds.value = _expandedTaskIds.value + task.id
             _isNewDialogOpen.value = false
-            _messages.tryEmit("Started ${task.priority.label} transfer: ${task.title}")
+            val limitNote = if (customLimitBps > 0L) " (Cap: ${FormatUtils.formatSpeed(customLimitBps)})" else ""
+            _messages.tryEmit("Started ${task.priority.label} transfer: ${task.title}$limitNote")
         }
     }
 
@@ -273,6 +353,16 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    private fun refreshAvailableFolders() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val root = StoragePaths.getDownloadsRoot(app)
+            val folders = root.listFiles()?.filter { it.isDirectory }
+                ?.sortedByDescending { it.lastModified() }
+                .orEmpty()
+            _availableLocalFolders.value = folders
+        }
+    }
+
     fun refreshFiles() {
         viewModelScope.launch {
             val dir = _currentBrowseDir.value
@@ -282,6 +372,7 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
                     .sortedWith(compareByDescending<File> { it.isDirectory }.thenByDescending { it.lastModified() })
                     .map { f ->
                         val isSiteDir = f.isDirectory && File(f, "index.html").exists()
+                        val isGit = f.isDirectory && File(f, ".git").exists()
                         FileBrowserEntry(
                             file = f,
                             name = f.name,
@@ -290,11 +381,13 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
                             childCount = if (f.isDirectory) f.listFiles()?.size ?: 0 else 1,
                             lastModified = f.lastModified(),
                             isArchive = f.isFile && ArchiveManager.isSupportedArchive(f.name),
-                            isHtmlSiteEntry = isSiteDir || f.extension.equals("html", true) || f.extension.equals("htm", true)
+                            isHtmlSiteEntry = isSiteDir || f.extension.equals("html", true) || f.extension.equals("htm", true),
+                            isGitRepo = isGit
                         )
                     }
             }
             _browserEntries.value = entries
+            refreshAvailableFolders()
         }
     }
 
@@ -413,5 +506,18 @@ class WinFetchViewModel(application: Application) : AndroidViewModel(application
 
     fun setDefaultExtract(enabled: Boolean) {
         viewModelScope.launch { prefsRepo.setDefaultExtract(enabled) }
+    }
+
+    fun setSpeedLimit(enabled: Boolean, value: Long, unit: SpeedUnit) {
+        viewModelScope.launch {
+            prefsRepo.setSpeedLimit(enabled, value, unit)
+            val msg = if (enabled) {
+                val bps = unit.toBytesPerSecond(value)
+                "Global speed limit set to $value ${unit.shortLabel}/s (${FormatUtils.formatSpeed(bps)})"
+            } else {
+                "Global speed limit disabled (Unlimited)"
+            }
+            _messages.tryEmit(msg)
+        }
     }
 }

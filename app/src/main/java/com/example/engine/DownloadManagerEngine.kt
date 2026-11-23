@@ -47,9 +47,14 @@ class DownloadManagerEngine(
     private val directDownloader = DirectDownloader(httpClient)
     private val siteMirrorDownloader = SiteMirrorDownloader(httpClient)
     private val torrentDownloader = TorrentDownloader(context, httpClient)
+    private val gitEngine = GitTransferEngine(context)
 
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val transientGitCreds = ConcurrentHashMap<String, GitRuntimeCredentials>()
     private val scheduleMutex = Mutex()
+
+    @Volatile
+    private var globalSpeedLimitBytes: Long = 0L
 
     // Rolling 32-sample speed history per transfer ID for the Windows 10 Transfer Graph
     private val _speedHistory = MutableStateFlow<Map<String, List<Long>>>(emptyMap())
@@ -61,6 +66,12 @@ class DownloadManagerEngine(
             val all = dao.getAllTasksOnce()
             all.filter { it.status.isActive }.forEach { stuck ->
                 dao.updateStatus(stuck.id, DownloadStatus.PAUSED, "Interrupted — tap Resume")
+            }
+        }
+        // Keep live global speed limit synchronized with DataStore
+        scope.launch {
+            prefsRepo.settingsFlow.collect { s ->
+                globalSpeedLimitBytes = s.effectiveLimitBytesPerSec
             }
         }
     }
@@ -76,13 +87,23 @@ class DownloadManagerEngine(
         downloadIntoFolder: Boolean = false,
         folderName: String = "",
         extractOnDownload: Boolean = false,
-        safTreeUri: String? = null
+        safTreeUri: String? = null,
+        localSourcePath: String = "",
+        gitBranch: String = "",
+        gitCommitMessage: String = "",
+        gitShallow: Boolean = true,
+        gitCredentials: GitRuntimeCredentials? = null,
+        speedLimitBytesPerSec: Long = 0L
     ): DownloadTaskEntity {
         val resolvedTitle = title.ifBlank {
-            deriveDefaultTitle(sourceUrl, kind)
+            deriveDefaultTitle(sourceUrl, kind, folderName)
+        }
+        val taskId = UUID.randomUUID().toString()
+        if (gitCredentials != null) {
+            transientGitCreds[taskId] = gitCredentials
         }
         val entity = DownloadTaskEntity(
-            id = UUID.randomUUID().toString(),
+            id = taskId,
             title = resolvedTitle,
             sourceUrl = sourceUrl.trim(),
             kind = kind,
@@ -91,10 +112,15 @@ class DownloadManagerEngine(
             siteArchiveFormat = siteFormat,
             rewriteSiteRefs = rewriteSiteRefs,
             includeSiteScripts = includeSiteScripts,
-            downloadIntoFolder = downloadIntoFolder || kind == DownloadKind.FOLDER_BUNDLE,
+            downloadIntoFolder = downloadIntoFolder || kind == DownloadKind.FOLDER_BUNDLE || kind == DownloadKind.GIT_DOWNLOAD,
             folderName = folderName.trim(),
             extractOnDownload = extractOnDownload,
+            localPath = localSourcePath,
             safTreeUri = safTreeUri,
+            gitBranch = gitBranch.trim(),
+            gitCommitMessage = gitCommitMessage.trim(),
+            gitShallow = gitShallow,
+            speedLimitBytesPerSec = speedLimitBytesPerSec,
             statusDetail = "Queued (${priority.label})"
         )
         dao.insertTask(entity)
@@ -130,6 +156,7 @@ class DownloadManagerEngine(
     fun cancelDownload(id: String) {
         scope.launch {
             activeJobs.remove(id)?.cancel()
+            transientGitCreds.remove(id)
             dao.updateStatus(id, DownloadStatus.CANCELED, "Canceled")
             triggerScheduler()
         }
@@ -138,8 +165,9 @@ class DownloadManagerEngine(
     fun deleteDownload(id: String, deleteLocalFiles: Boolean) {
         scope.launch {
             activeJobs.remove(id)?.cancel()
+            transientGitCreds.remove(id)
             val task = dao.getTaskById(id)
-            if (deleteLocalFiles && task != null) {
+            if (deleteLocalFiles && task != null && task.kind != DownloadKind.GIT_UPLOAD) {
                 if (task.localPath.isNotBlank()) {
                     runCatching { File(task.localPath).deleteRecursively() }
                 }
@@ -209,6 +237,7 @@ class DownloadManagerEngine(
         scope.launch {
             scheduleMutex.withLock {
                 val settings = prefsRepo.settingsFlow.first()
+                globalSpeedLimitBytes = settings.effectiveLimitBytesPerSec
                 val allTasks = dao.getAllTasksOnce()
                 val runningCount = activeJobs.count { it.value.isActive }
                 val queued = allTasks
@@ -218,7 +247,6 @@ class DownloadManagerEngine(
                             .thenBy { it.createdAt }
                     )
 
-                // URGENT tasks get +1 express slot above normal concurrency limit
                 var slotsAvailable = (settings.maxConcurrentDownloads - runningCount).coerceAtLeast(0)
                 for (task in queued) {
                     if (activeJobs.containsKey(task.id)) continue
@@ -239,6 +267,10 @@ class DownloadManagerEngine(
             var current = initialTask
             val downloadsRoot = StoragePaths.getDownloadsRoot(context)
             val stagingRoot = StoragePaths.getSitesStagingRoot(context)
+
+            val taskLimiter = BandwidthLimiter {
+                if (current.speedLimitBytesPerSec > 0L) current.speedLimitBytesPerSec else globalSpeedLimitBytes
+            }
 
             try {
                 val isUrgentActive = {
@@ -273,6 +305,7 @@ class DownloadManagerEngine(
                             task = current,
                             downloadsRoot = downloadsRoot,
                             isUrgentActive = isUrgentActive,
+                            limiter = taskLimiter,
                             onProgress = progressCallback
                         )
                     }
@@ -281,6 +314,7 @@ class DownloadManagerEngine(
                             task = current,
                             downloadsRoot = downloadsRoot,
                             stagingRoot = stagingRoot,
+                            limiter = taskLimiter,
                             onProgress = progressCallback
                         )
                     }
@@ -288,6 +322,25 @@ class DownloadManagerEngine(
                         torrentDownloader.download(
                             task = current,
                             downloadsRoot = downloadsRoot,
+                            limiter = taskLimiter,
+                            onProgress = progressCallback
+                        )
+                    }
+                    DownloadKind.GIT_DOWNLOAD -> {
+                        gitEngine.downloadRepo(
+                            task = current,
+                            downloadsRoot = downloadsRoot,
+                            credentials = transientGitCreds[current.id],
+                            limiter = taskLimiter,
+                            onProgress = progressCallback
+                        )
+                    }
+                    DownloadKind.GIT_UPLOAD -> {
+                        gitEngine.uploadFolder(
+                            task = current,
+                            downloadsRoot = downloadsRoot,
+                            credentials = transientGitCreds[current.id],
+                            limiter = taskLimiter,
                             onProgress = progressCallback
                         )
                     }
@@ -317,9 +370,8 @@ class DownloadManagerEngine(
                     }
                 }
 
-                // Export to user-picked SAF directory if configured
                 val safUriStr = current.safTreeUri
-                if (!safUriStr.isNullOrBlank()) {
+                if (!safUriStr.isNullOrBlank() && current.kind != DownloadKind.GIT_UPLOAD) {
                     runCatching {
                         val exportTarget = extractedDir ?: outputFile
                         ShareAndExportHelper.copyToSafTree(context, exportTarget, Uri.parse(safUriStr))
@@ -342,7 +394,7 @@ class DownloadManagerEngine(
                         totalBytes = finalSize.coerceAtLeast(latest.totalBytes),
                         speedBytesPerSec = 0L,
                         etaSeconds = 0L,
-                        statusDetail = buildCompletionDetail(outputFile, extractedDir),
+                        statusDetail = buildCompletionDetail(latest.kind, outputFile, extractedDir),
                         errorMessage = null,
                         completedAt = System.currentTimeMillis()
                     )
@@ -362,6 +414,7 @@ class DownloadManagerEngine(
                 )
             } finally {
                 activeJobs.remove(initialTask.id)
+                transientGitCreds.remove(initialTask.id)
                 triggerScheduler()
             }
         }
@@ -376,7 +429,13 @@ class DownloadManagerEngine(
         }
     }
 
-    private fun buildCompletionDetail(outputFile: File, extractedDir: File?): String {
+    private fun buildCompletionDetail(kind: DownloadKind, outputFile: File, extractedDir: File?): String {
+        if (kind == DownloadKind.GIT_UPLOAD) {
+            return "Pushed ${outputFile.name}/ to remote Git repository"
+        }
+        if (kind == DownloadKind.GIT_DOWNLOAD) {
+            return "Cloned repository to ${outputFile.name}/ (${StoragePaths.countFiles(outputFile)} files)"
+        }
         val base = if (outputFile.isDirectory) {
             "Saved folder (${StoragePaths.countFiles(outputFile)} files)"
         } else {
@@ -404,8 +463,15 @@ class DownloadManagerEngine(
     }
 
     companion object {
-        fun deriveDefaultTitle(sourceUrl: String, kind: DownloadKind): String {
+        fun deriveDefaultTitle(sourceUrl: String, kind: DownloadKind, folderName: String = ""): String {
             val firstLine = sourceUrl.lines().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+            if (kind == DownloadKind.GIT_DOWNLOAD) {
+                return GitTransferEngine.deriveRepoName(firstLine)
+            }
+            if (kind == DownloadKind.GIT_UPLOAD) {
+                val repo = GitTransferEngine.deriveRepoName(firstLine)
+                return if (folderName.isNotBlank()) "Push $folderName -> $repo" else "Push to $repo"
+            }
             if (firstLine.startsWith("magnet:", true)) {
                 val dn = Regex("[?&]dn=([^&]+)").find(firstLine)?.groupValues?.getOrNull(1)
                 return dn?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrNull() }

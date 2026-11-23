@@ -68,6 +68,22 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+  packaging {
+    resources {
+      excludes += listOf(
+        "META-INF/DEPENDENCIES",
+        "META-INF/LICENSE",
+        "META-INF/LICENSE.txt",
+        "META-INF/LICENSE.md",
+        "META-INF/NOTICE",
+        "META-INF/NOTICE.txt",
+        "META-INF/NOTICE.md",
+        "META-INF/INDEX.LIST",
+        "META-INF/ECLIPSE_.SF",
+        "META-INF/ECLIPSE_.RSA"
+      )
+    }
+  }
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -128,6 +144,7 @@ dependencies {
   implementation(libs.commons.compress)
   implementation(libs.xz)
   implementation(libs.androidx.documentfile)
+  implementation(libs.jgit)
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

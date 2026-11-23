@@ -35,6 +35,7 @@ class DirectDownloader(
         task: DownloadTaskEntity,
         downloadsRoot: File,
         isUrgentActive: () -> Boolean,
+        limiter: BandwidthLimiter,
         onProgress: suspend (TransferProgressUpdate) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val urls = task.sourceUrl
@@ -64,6 +65,7 @@ class DirectDownloader(
                 existingLocalPath = task.localPath,
                 priority = task.priority,
                 isUrgentActive = isUrgentActive,
+                limiter = limiter,
                 onProgress = onProgress
             )
         }
@@ -78,7 +80,8 @@ class DirectDownloader(
                 preferredFileName = null,
                 existingLocalPath = "",
                 priority = task.priority,
-                isUrgentActive = isUrgentActive
+                isUrgentActive = isUrgentActive,
+                limiter = limiter
             ) { update ->
                 onProgress(
                     update.copy(
@@ -102,6 +105,7 @@ class DirectDownloader(
         existingLocalPath: String,
         priority: DownloadPriority,
         isUrgentActive: () -> Boolean,
+        limiter: BandwidthLimiter,
         onProgress: suspend (TransferProgressUpdate) -> Unit
     ): File {
         onProgress(TransferProgressUpdate(status = DownloadStatus.CONNECTING, statusDetail = "Connecting to host..."))
@@ -164,7 +168,7 @@ class DirectDownloader(
                 )
             )
 
-            val buffer = ByteArray(32 * 1024)
+            val buffer = ByteArray(16 * 1024)
             body.byteStream().use { input ->
                 BufferedOutputStream(FileOutputStream(outFile, isResumed)).use { output ->
                     while (true) {
@@ -174,6 +178,8 @@ class DirectDownloader(
                         output.write(buffer, 0, read)
                         downloaded += read
                         windowBytes += read
+
+                        limiter.throttle(read)
 
                         // Casual priority politely yields slightly when URGENT transfers are active
                         if (priority == DownloadPriority.CASUAL && isUrgentActive()) {

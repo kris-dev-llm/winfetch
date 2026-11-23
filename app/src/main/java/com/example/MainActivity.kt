@@ -37,9 +37,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -68,9 +68,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.data.prefs.WinFetchSettings
 import com.example.engine.FormatUtils
 import com.example.ui.WinFetchViewModel
 import com.example.ui.components.NewDownloadDialog
+import com.example.ui.components.SpeedLimitDialog
 import com.example.ui.screens.FilesBrowserScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.TransfersScreen
@@ -151,7 +153,9 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val expandedIds by viewModel.expandedTaskIds.collectAsStateWithLifecycle()
     val isNewDialogOpen by viewModel.isNewDialogOpen.collectAsStateWithLifecycle()
+    val isSpeedLimitOpen by viewModel.isSpeedLimitDialogOpen.collectAsStateWithLifecycle()
     val draft by viewModel.draft.collectAsStateWithLifecycle()
+    val availableFolders by viewModel.availableLocalFolders.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val currentBrowseDir by viewModel.currentBrowseDir.collectAsStateWithLifecycle()
     val browserEntries by viewModel.browserEntries.collectAsStateWithLifecycle()
@@ -183,6 +187,7 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
     if (isNewDialogOpen) {
         NewDownloadDialog(
             draft = draft,
+            availableFolders = availableFolders,
             onDraftChange = viewModel::updateDraft,
             onDismiss = viewModel::closeNewDownloadDialog,
             onSubmit = {
@@ -194,6 +199,14 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
                     viewModel.submitNewDownload()
                 }
             }
+        )
+    }
+
+    if (isSpeedLimitOpen) {
+        SpeedLimitDialog(
+            settings = settings,
+            onDismiss = viewModel::closeSpeedLimitDialog,
+            onSave = viewModel::setSpeedLimit
         )
     }
 
@@ -216,6 +229,8 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
                 Win10TitleBar(
                     activeCount = activeCount,
                     totalSpeed = totalSpeed,
+                    settings = settings,
+                    onOpenSpeedLimit = viewModel::openSpeedLimitDialog,
                     onNewDownload = { viewModel.openNewDownloadDialog() }
                 )
             },
@@ -264,12 +279,14 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
                         TransfersScreen(
                             tasks = filteredTasks,
                             speedHistory = speedHistory,
+                            settings = settings,
                             selectedFilter = selectedFilter,
                             searchQuery = searchQuery,
                             expandedIds = expandedIds,
                             onSelectFilter = viewModel::setFilter,
                             onSearchChange = viewModel::setSearchQuery,
                             onNewDownload = { viewModel.openNewDownloadDialog() },
+                            onOpenSpeedLimit = viewModel::openSpeedLimitDialog,
                             onPauseAll = viewModel::pauseAll,
                             onResumeAll = viewModel::resumeAll,
                             onClearCompleted = viewModel::clearCompleted,
@@ -295,6 +312,7 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
                             onRefresh = viewModel::refreshFiles,
                             onOpenEntry = viewModel::openFileEntry,
                             onExtractEntry = viewModel::extractFileEntry,
+                            onGitPushFolder = { entry -> viewModel.openGitPushForFolder(entry.file) },
                             onShareEntry = viewModel::shareFileEntry,
                             onDeleteEntry = viewModel::deleteFileEntry,
                             onClosePreview = viewModel::closeHtmlPreview
@@ -308,7 +326,15 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
                             onDefaultPriorityChange = viewModel::setDefaultPriority,
                             onDefaultSiteFormatChange = viewModel::setDefaultSiteFormat,
                             onDefaultRewriteRefsChange = viewModel::setDefaultRewriteRefs,
-                            onDefaultExtractChange = viewModel::setDefaultExtract
+                            onDefaultExtractChange = viewModel::setDefaultExtract,
+                            onOpenSpeedLimitDialog = viewModel::openSpeedLimitDialog,
+                            onToggleSpeedLimitQuick = { enabled ->
+                                viewModel.setSpeedLimit(
+                                    enabled = enabled,
+                                    value = settings.speedLimitValue,
+                                    unit = settings.speedLimitUnit
+                                )
+                            }
                         )
                     }
                 }
@@ -321,6 +347,8 @@ private fun WinFetchShell(viewModel: WinFetchViewModel) {
 private fun Win10TitleBar(
     activeCount: Int,
     totalSpeed: Long,
+    settings: WinFetchSettings,
+    onOpenSpeedLimit: () -> Unit,
     onNewDownload: () -> Unit
 ) {
     val tokens = LocalWin10Tokens.current
@@ -360,10 +388,15 @@ private fun Win10TitleBar(
                     color = Color.White
                 )
                 Text(
-                    text = if (activeCount > 0) {
-                        "$activeCount active • ${FormatUtils.formatSpeed(totalSpeed)}"
-                    } else {
-                        "Windows 10 Transfer Manager"
+                    text = buildString {
+                        if (activeCount > 0) {
+                            append("$activeCount active • ${FormatUtils.formatSpeed(totalSpeed)}")
+                        } else {
+                            append("Windows 10 Transfer Manager")
+                        }
+                        if (settings.speedLimitEnabled) {
+                            append(" • Cap ${settings.speedLimitValue} ${settings.speedLimitUnit.shortLabel}/s")
+                        }
                     },
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = WinMonoFamily,
@@ -372,6 +405,24 @@ private fun Win10TitleBar(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            Surface(
+                shape = RectangleShape,
+                color = if (settings.speedLimitEnabled) Color.White.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                    .testTag("titlebar_speed_limit_button")
+                    .clickable(onClick = onOpenSpeedLimit)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
+                    Icon(
+                        imageVector = Icons.Filled.Speed,
+                        contentDescription = "Speed limit",
+                        tint = Color.White
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(6.dp))
             Surface(
                 shape = RectangleShape,
                 color = Color.White.copy(alpha = 0.16f),

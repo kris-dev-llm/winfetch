@@ -24,6 +24,10 @@ data class DownloadTaskEntity(
     val localPath: String = "",
     val extractedPath: String? = null,
     val safTreeUri: String? = null,
+    val gitBranch: String = "",
+    val gitCommitMessage: String = "",
+    val gitShallow: Boolean = true,
+    val speedLimitBytesPerSec: Long = 0L,
     val bytesDownloaded: Long = 0L,
     val totalBytes: Long = -1L,
     val speedBytesPerSec: Long = 0L,
@@ -41,8 +45,8 @@ data class DownloadTaskEntity(
         get() = when {
             status == DownloadStatus.COMPLETED -> 1f
             totalBytes > 0L -> (bytesDownloaded.toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0f, 1f)
-            kind == DownloadKind.WEBSITE && assetsTotal > 0 ->
-                (assetsDownloaded.toFloat() / assetsTotal.toFloat()).coerceIn(0f, 0.95f)
+            (kind == DownloadKind.WEBSITE || kind == DownloadKind.GIT_DOWNLOAD || kind == DownloadKind.GIT_UPLOAD) && assetsTotal > 0 ->
+                (assetsDownloaded.toFloat() / assetsTotal.toFloat()).coerceIn(0f, 0.98f)
             else -> 0f
         }
 }

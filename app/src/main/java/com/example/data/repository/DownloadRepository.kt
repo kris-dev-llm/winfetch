@@ -6,6 +6,7 @@ import com.example.data.model.DownloadKind
 import com.example.data.model.DownloadPriority
 import com.example.data.model.SiteArchiveFormat
 import com.example.engine.DownloadManagerEngine
+import com.example.engine.GitRuntimeCredentials
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
@@ -28,7 +29,13 @@ class DownloadRepository(
         downloadIntoFolder: Boolean,
         folderName: String,
         extractOnDownload: Boolean,
-        safTreeUri: String?
+        safTreeUri: String?,
+        localSourcePath: String = "",
+        gitBranch: String = "",
+        gitCommitMessage: String = "",
+        gitShallow: Boolean = true,
+        gitCredentials: GitRuntimeCredentials? = null,
+        speedLimitBytesPerSec: Long = 0L
     ): DownloadTaskEntity {
         return engine.enqueueNewDownload(
             sourceUrl = sourceUrl,
@@ -41,7 +48,13 @@ class DownloadRepository(
             downloadIntoFolder = downloadIntoFolder,
             folderName = folderName,
             extractOnDownload = extractOnDownload,
-            safTreeUri = safTreeUri
+            safTreeUri = safTreeUri,
+            localSourcePath = localSourcePath,
+            gitBranch = gitBranch,
+            gitCommitMessage = gitCommitMessage,
+            gitShallow = gitShallow,
+            gitCredentials = gitCredentials,
+            speedLimitBytesPerSec = speedLimitBytesPerSec
         )
     }
 

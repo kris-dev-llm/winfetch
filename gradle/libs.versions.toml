@@ -44,6 +44,7 @@ jsoup = "1.18.3"
 commonsCompress = "1.27.1"
 xz = "1.10"
 documentfile = "1.0.1"
+jgit = "6.10.0.202406032230-r"
 
 
 [libraries]
@@ -102,6 +103,7 @@ jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
 xz = { group = "org.tukaani", name = "xz", version.ref = "xz" }
 androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
+jgit = { group = "org.eclipse.jgit", name = "org.eclipse.jgit", version.ref = "jgit" }
 
 
 [plugins]

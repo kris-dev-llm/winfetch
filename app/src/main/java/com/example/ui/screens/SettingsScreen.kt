@@ -30,8 +30,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.model.DownloadPriority
 import com.example.data.model.SiteArchiveFormat
+import com.example.data.model.SpeedUnit
 import com.example.data.prefs.WinFetchSettings
+import com.example.engine.FormatUtils
 import com.example.engine.StoragePaths
+import com.example.ui.components.Win10ActionButton
 import com.example.ui.components.Win10CheckboxRow
 import com.example.ui.theme.LocalWin10Tokens
 import com.example.ui.theme.WinMonoFamily
@@ -46,6 +49,8 @@ fun SettingsScreen(
     onDefaultSiteFormatChange: (SiteArchiveFormat) -> Unit,
     onDefaultRewriteRefsChange: (Boolean) -> Unit,
     onDefaultExtractChange: (Boolean) -> Unit,
+    onOpenSpeedLimitDialog: () -> Unit,
+    onToggleSpeedLimitQuick: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val tokens = LocalWin10Tokens.current
@@ -65,6 +70,28 @@ fun SettingsScreen(
             style = MaterialTheme.typography.headlineSmall,
             color = tokens.textPrimary
         )
+
+        SettingsBlock(title = "DOWNLOAD SPEED LIMITER (Kb / KB / KiB)") {
+            Win10CheckboxRow(
+                checked = settings.speedLimitEnabled,
+                onCheckedChange = onToggleSpeedLimitQuick,
+                label = if (settings.speedLimitEnabled) {
+                    "Limit Active: ${settings.speedLimitValue} ${settings.speedLimitUnit.shortLabel}/s (${FormatUtils.formatSpeed(settings.effectiveLimitBytesPerSec)})"
+                } else {
+                    "Enable Global Download Speed Limit"
+                },
+                subtitle = "Supports Kb (bits/s), KB (1,000 B/s), KiB (1,024 B/s), Mb, MB, MiB",
+                testTag = "settings_speed_limit_checkbox"
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Win10ActionButton(
+                text = "Configure Speed Limit & Units...",
+                primary = true,
+                onClick = onOpenSpeedLimitDialog,
+                modifier = Modifier.fillMaxWidth(),
+                testTag = "settings_configure_speed_limit_button"
+            )
+        }
 
         SettingsBlock(title = "APPEARANCE (WINDOWS 10 THEME)") {
             Row(

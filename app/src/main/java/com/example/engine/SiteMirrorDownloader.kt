@@ -35,6 +35,7 @@ class SiteMirrorDownloader(
         task: DownloadTaskEntity,
         downloadsRoot: File,
         stagingRoot: File,
+        limiter: BandwidthLimiter,
         onProgress: suspend (TransferProgressUpdate) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val rawUrl = task.sourceUrl.trim().let {
@@ -145,7 +146,7 @@ class SiteMirrorDownloader(
                             "js" -> jsDir
                             else -> imagesDir
                         }
-                        val savedFile = downloadAssetFile(ref.absoluteUrl, targetSubDir, index + 1, ref.fallbackExt)
+                        val savedFile = downloadAssetFile(ref.absoluteUrl, targetSubDir, index + 1, ref.fallbackExt, limiter)
                         if (savedFile != null) {
                             val relPath = "${ref.subFolder}/${savedFile.name}"
                             urlToLocalRel[ref.absoluteUrl] = relPath
@@ -176,7 +177,7 @@ class SiteMirrorDownloader(
         cssFilesToRewrite.forEach { (cssFile, cssAbsUrl) ->
             coroutineContext.ensureActive()
             val cssText = runCatching { cssFile.readText() }.getOrNull() ?: return@forEach
-            val rewrittenCss = rewriteCssUrls(cssText, cssAbsUrl, imagesDir, urlToLocalRel, totalBytes)
+            val rewrittenCss = rewriteCssUrls(cssText, cssAbsUrl, imagesDir, urlToLocalRel, totalBytes, limiter)
             cssFile.writeText(rewrittenCss)
         }
 
@@ -313,7 +314,8 @@ class SiteMirrorDownloader(
         cssAbsUrl: String,
         imagesDir: File,
         urlToLocalRel: ConcurrentHashMap<String, String>,
-        totalBytes: AtomicLong
+        totalBytes: AtomicLong,
+        limiter: BandwidthLimiter
     ): String {
         val cssHttpUrl = cssAbsUrl.toHttpUrlOrNull() ?: return cssText
         val regex = Regex("url\\(([^)]+)\\)", RegexOption.IGNORE_CASE)
@@ -327,7 +329,7 @@ class SiteMirrorDownloader(
                 if (resolved != null) {
                     val existingRel = urlToLocalRel[resolved]
                     val localRel = existingRel ?: run {
-                        val saved = downloadAssetFile(resolved, imagesDir, 500 + counter++, "png")
+                        val saved = downloadAssetFile(resolved, imagesDir, 500 + counter++, "png", limiter)
                         if (saved != null) {
                             totalBytes.addAndGet(saved.length())
                             val rel = "images/${saved.name}"
@@ -347,7 +349,8 @@ class SiteMirrorDownloader(
         url: String,
         targetDir: File,
         index: Int,
-        fallbackExt: String
+        fallbackExt: String,
+        limiter: BandwidthLimiter
     ): File? {
         return runCatching {
             val req = Request.Builder()
@@ -365,9 +368,14 @@ class SiteMirrorDownloader(
                 val base = StoragePaths.sanitizeName(rawName.substringBeforeLast('.').ifBlank { "asset_$index" }, "asset_$index")
                 val fileName = "${index.toString().padStart(3, '0')}_$base.$ext"
                 val outFile = StoragePaths.uniqueFile(targetDir, fileName)
+                val buf = ByteArray(16 * 1024)
                 body.byteStream().use { input ->
                     outFile.outputStream().use { output ->
-                        input.copyTo(output)
+                        var r: Int
+                        while (input.read(buf).also { r = it } != -1) {
+                            output.write(buf, 0, r)
+                            limiter.throttleBlocking(r)
+                        }
                     }
                 }
                 outFile

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.example.data.local.DownloadTaskEntity
 import com.example.data.model.DownloadStatus
+import com.example.engine.BandwidthLimiter
 import com.example.engine.StoragePaths
 import com.example.engine.TransferProgressUpdate
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +40,7 @@ class TorrentDownloader(
     suspend fun download(
         task: DownloadTaskEntity,
         downloadsRoot: File,
+        limiter: BandwidthLimiter,
         onProgress: suspend (TransferProgressUpdate) -> Unit
     ): File = withContext(Dispatchers.IO) {
         onProgress(
@@ -120,6 +122,7 @@ class TorrentDownloader(
                 peers = discoveredPeers.toList(),
                 seedsFound = maxSeeds,
                 peerId = peerId,
+                limiter = limiter,
                 onProgress = onProgress
             )
         }
@@ -134,6 +137,7 @@ class TorrentDownloader(
             peers = discoveredPeers.toList(),
             seedsFound = maxSeeds,
             peerId = peerId,
+            limiter = limiter,
             onProgress = onProgress
         )
     }
@@ -144,6 +148,7 @@ class TorrentDownloader(
         peers: List<InetSocketAddress>,
         seedsFound: Int,
         peerId: ByteArray,
+        limiter: BandwidthLimiter,
         onProgress: suspend (TransferProgressUpdate) -> Unit
     ): File {
         val totalPieces = metadata.pieceHashes.size
@@ -163,6 +168,7 @@ class TorrentDownloader(
 
         try {
             fun writePieceToFiles(pieceIndex: Int, pieceData: ByteArray) {
+                limiter.throttleBlocking(pieceData.size)
                 var globalOffset = pieceIndex.toLong() * metadata.pieceLength.toLong()
                 var dataOffset = 0
                 var remaining = pieceData.size
