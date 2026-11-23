@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Subtle dark blue drop tile for depth -->
+    <path
+        android:fillColor="#003566"
+        android:pathData="M29,31 L79,31 L79,79 L29,79 Z" />
+    <!-- Crisp Windows 10 Fluent Window/Folder Panel in Sky Blue -->
+    <path
+        android:fillColor="#1A8FE8"
+        android:pathData="M26,27 L76,27 L76,75 L26,75 Z" />
+    <!-- Top title bar strip on tile -->
+    <path
+        android:fillColor="#60CDFF"
+        android:pathData="M26,27 L76,27 L76,34 L26,34 Z" />
+    <!-- Sharp Bold Download Arrow -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M47,38 L55,38 L55,54 L63,54 L51,67 L39,54 L47,54 Z" />
+    <!-- Windows 10 Progress Bar Tray at bottom -->
+    <path
+        android:fillColor="#004275"
+        android:pathData="M31,70 L71,70 L71,75 L31,75 Z" />
+    <!-- Active Progress Fill inside tray -->
+    <path
+        android:fillColor="#9CE5FF"
+        android:pathData="M31,70 L58,70 L58,75 L31,75 Z" />
+</vector>
