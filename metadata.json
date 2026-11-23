@@ -1,0 +1,6 @@
+{
+  "name": "WinFetch",
+  "description": "Windows 10-style download manager supporting direct files, folder targets, offline website mirroring (ZIP/DIR/7Z), torrents, auto-extraction, priority queuing, and sharing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
