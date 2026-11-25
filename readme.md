@@ -1,4 +1,4 @@
-#WinFetch
+### WinFetch
 for android
 instructions:
 install gradle and JDK 17 (recommended openjdk)
